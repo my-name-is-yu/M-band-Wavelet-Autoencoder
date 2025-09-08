@@ -16,11 +16,13 @@ class AudioDataset(Dataset):
     固定長のセグメントにして返すデータセット。
     """
 
-    def __init__(self, folder_path, signal_length, sample_rate):
+    def __init__(self, folder_path, signal_length, sample_rate, train=False, hop_ratio=0.5):
         super().__init__()
         self.folder_path = folder_path
         self.signal_length = signal_length
         self.sample_rate = sample_rate
+        self.train = train
+        self.hop_ratio = hop_ratio
 
         self.file_paths = [os.path.join(folder_path, f) for f in os.listdir(
             folder_path) if f.endswith('.wav')]
@@ -32,11 +34,9 @@ class AudioDataset(Dataset):
             audio, _ = librosa.load(path, sr=self.sample_rate, mono=True)
             audio = librosa.util.normalize(audio)
 
-            num_segments = len(audio) // self.signal_length
-            for i in range(num_segments):
-                segment = audio[i *
-                                self.signal_length: (i + 1) * self.signal_length]
-                self.segments.append(segment)
+            hop = max(1, int(self.signal_length * self.hop_ratio))
+            for start in range(0, len(audio) - self.signal_length + 1, hop):
+                segment = audio[start:start + self.signal_length]
 
         if not self.segments:
             raise ValueError("どの音声ファイルも指定された信号長より短いため、学習データを作成できませんでした。")
@@ -47,6 +47,21 @@ class AudioDataset(Dataset):
 
     def __getitem__(self, idx):
         return torch.tensor(self.segments[idx], dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.segments)
+
+    def __getitem__(self, idx):
+        seg = self.segments[idx].copy()
+        if self.train:
+            g = np.random.uniform(0.8, 1.2)
+            seg *= g
+            shift = np.random.randint(-64, 65)
+            seg = np.roll(seg, shift)
+            if np.random.rand() < 0.3:
+                s = np.random.randint(0, len(seg)-128)
+                seg[s:s+128] = 0.0
+        return torch.tensor(seg, dtype=torch.float32)
 
 
 class M_Band_Wavelet_Autoencoder(nn.Module):
@@ -106,26 +121,31 @@ PATIENCE = 10  # 10エポック連続で改善が見られなければ終了
 MIN_DELTA = 1e-6  # 改善とみなす最小の変化量
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-'''
-try:
-    dataset = AudioDataset(folder_path=NORMAL_SOUND_DIR,
-                           signal_length=SIGNAL_LENGTH, sample_rate=SAMPLE_RATE)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-except Exception as e:
-    print(f"データ読み込みエラー: {e}")
-    exit()
-'''
+full_tmp = AudioDataset(NORMAL_SOUND_DIR, SIGNAL_LENGTH,
+                        SAMPLE_RATE, train=False, hop_ratio=0.5)
+num_segments = len(full_tmp)
 
-full = AudioDataset(NORMAL_SOUND_DIR, SIGNAL_LENGTH, SAMPLE_RATE)
-n_val = max(1, int(0.2 * len(full)))
-n_train = len(full) - n_val
-train_set, val_set = random_split(
-    full, [n_train, n_val], generator=torch.Generator().manual_seed(42))
+indices = np.arange(num_segments)
+rng = np.random.default_rng(42)
+rng.shuffle(indices)
+n_val = max(1, int(0.2 * num_segments))
+val_idx = indices[:n_val]
+train_idx = indices[n_val:]
 
-train_loader = DataLoader(
-    train_set, batch_size=BATCH_SIZE, shuffle=True, num_workers=2, pin_memory=True)
+# 学習用と検証用で別インスタンス（学習側のみAugを有効化）
+train_ds = AudioDataset(NORMAL_SOUND_DIR, SIGNAL_LENGTH,
+                        SAMPLE_RATE, train=True,  hop_ratio=0.5)
+val_ds = AudioDataset(NORMAL_SOUND_DIR, SIGNAL_LENGTH,
+                      SAMPLE_RATE, train=False, hop_ratio=0.5)
+
+train_set = torch.utils.data.Subset(train_ds, train_idx.tolist())
+val_set = torch.utils.data.Subset(val_ds,   val_idx.tolist())
+
+_pin = (device.type == 'cuda')
+train_loader = DataLoader(train_set, batch_size=BATCH_SIZE,
+                          shuffle=True,  num_workers=2, pin_memory=_pin)
 val_loader = DataLoader(val_set,   batch_size=BATCH_SIZE,
-                        shuffle=False, num_workers=2, pin_memory=True)
+                        shuffle=False, num_workers=2, pin_memory=_pin)
 
 model = M_Band_Wavelet_Autoencoder(
     M=M, filter_length=FILTER_LENGTH, signal_length=SIGNAL_LENGTH).to(device)
