@@ -73,14 +73,16 @@ class M_Band_Wavelet_Autoencoder(nn.Module):
         return reconstructed_x[:, :original_len]
 
 # ハイパーパラメータ設定・学習用フォルダの指定
-NORMAL_SOUND_DIR = '~/DATABASE/AirCompressorDataset/Healthy'
+NORMAL_SOUND_DIR = os.path.expanduser('~/DATABASE/AirCompressorDataset/Healthy')
 MODEL_SAVE_PATH = 'm_band_wavelet_model.pth'
 SAMPLE_RATE = 16000
 SIGNAL_LENGTH = 4096
 M = 8
 FILTER_LENGTH = 64
-EPOCHS = 100
+EPOCHS = 1000
 BATCH_SIZE = 32
+PATIENCE = 10  # 10エポック連続で改善が見られなければ終了
+MIN_DELTA = 1e-6 # 改善とみなす最小の変化量
 
 if __name__ == '__main__':
     
@@ -95,6 +97,10 @@ if __name__ == '__main__':
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
+    # Early Stopping用の変数を初期化
+    best_loss = float('inf')
+    patience_counter = 0
+
     print("\n学習を開始します...")
     for epoch in range(EPOCHS):
         total_loss = 0
@@ -108,9 +114,26 @@ if __name__ == '__main__':
             total_loss += loss.item()
         
         avg_loss = total_loss / len(dataloader)
+        
         if (epoch + 1) % 10 == 0:
             print(f'Epoch [{epoch+1}/{EPOCHS}], Loss: {avg_loss:.8f}')
-    print("学習が完了しました。")
 
-    torch.save(model.state_dict(), MODEL_SAVE_PATH)
-    print(f"\n学習済みモデルを '{MODEL_SAVE_PATH}' に保存しました。")
+        # Early Stoppingのチェック
+        if best_loss - avg_loss > MIN_DELTA:
+            # 誤差が改善した
+            best_loss = avg_loss
+            patience_counter = 0
+            # 最も性能の良いモデルを保存
+            torch.save(model.state_dict(), MODEL_SAVE_PATH)
+            # print(f"  -> Best model saved with loss: {best_loss:.8f}") # 保存したことを確認したい場合はコメントアウトを外す
+        else:
+            # 誤差が改善しなかった
+            patience_counter += 1
+        
+        if patience_counter >= PATIENCE:
+            print(f"\nEarly stopping. {PATIENCE}エポック連続で誤差が改善しなかったため、学習を終了します。")
+            break
+
+    print("学習が完了しました。")
+    print(f"\n最も性能の良かったモデル（誤差: {best_loss:.8f}）が '{MODEL_SAVE_PATH}' に保存されています。")
+
