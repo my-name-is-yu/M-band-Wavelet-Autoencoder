@@ -98,101 +98,110 @@ class M_Band_Wavelet_Autoencoder(nn.Module):
         return reconstructed_x[:, :original_len]
 
 
-def stft_l1_loss(x, y, n_fft=512, hop=128, win=512):
-    X = torch.stft(x, n_fft=n_fft, hop_length=hop, win_length=win,
-                   return_complex=True, center=True)
-    Y = torch.stft(y, n_fft=n_fft, hop_length=hop, win_length=win,
-                   return_complex=True, center=True)
-    return (X.abs() - Y.abs()).abs().mean()
+if __name__ == '__main__':
+    def stft_l1_loss(x, y, n_fft=512, hop=128, win=512):
+        # OK: winを最初の「位置引数」として渡す
+        window = torch.hann_window(win, device=x.device)
 
+        X = torch.stft(x, n_fft=n_fft, hop_length=hop, win_length=win,
+                       window=window,
+                       return_complex=True, center=True)
+        Y = torch.stft(y, n_fft=n_fft, hop_length=hop, win_length=win,
+                       window=window,
+                       return_complex=True, center=True)
+        return (X.abs() - Y.abs()).abs().mean()
 
-lambda_spec = 0.5
+    lambda_spec = 0.5
 
-# ハイパーパラメータ設定・学習用フォルダの指定
-NORMAL_SOUND_DIR = os.path.expanduser(
-    '~/DATABASE/AirCompressorDataset/Healthy')
-MODEL_SAVE_PATH = 'm_band_wavelet_model.pth'
-SAMPLE_RATE = 16000
-SIGNAL_LENGTH = 4096
-M = 8
-FILTER_LENGTH = 64
-EPOCHS = 1000
-BATCH_SIZE = 32
-PATIENCE = 10  # 10エポック連続で改善が見られなければ終了
-MIN_DELTA = 1e-6  # 改善とみなす最小の変化量
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # ハイパーパラメータ設定・学習用フォルダの指定
+    NORMAL_SOUND_DIR = os.path.expanduser(
+        '~/DATABASE/AirCompressorDataset/Healthy')
+    MODEL_SAVE_PATH = 'm_band_wavelet_model.pth'
+    SAMPLE_RATE = 16000
+    SIGNAL_LENGTH = 4096
+    M = 8
+    FILTER_LENGTH = 64
+    EPOCHS = 10
+    BATCH_SIZE = 32
+    PATIENCE = 10  # 10エポック連続で改善が見られなければ終了
+    MIN_DELTA = 1e-6  # 改善とみなす最小の変化量
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-full_tmp = AudioDataset(NORMAL_SOUND_DIR, SIGNAL_LENGTH,
-                        SAMPLE_RATE, train=False, hop_ratio=0.5)
-num_segments = len(full_tmp)
+    full_tmp = AudioDataset(NORMAL_SOUND_DIR, SIGNAL_LENGTH,
+                            SAMPLE_RATE, train=False, hop_ratio=0.5)
+    num_segments = len(full_tmp)
 
-indices = np.arange(num_segments)
-rng = np.random.default_rng(42)
-rng.shuffle(indices)
-n_val = max(1, int(0.2 * num_segments))
-val_idx = indices[:n_val]
-train_idx = indices[n_val:]
+    indices = np.arange(num_segments)
+    rng = np.random.default_rng(42)
+    rng.shuffle(indices)
+    n_val = max(1, int(0.2 * num_segments))
+    val_idx = indices[:n_val]
+    train_idx = indices[n_val:]
 
-# 学習用と検証用で別インスタンス（学習側のみAugを有効化）
-train_ds = AudioDataset(NORMAL_SOUND_DIR, SIGNAL_LENGTH,
-                        SAMPLE_RATE, train=True,  hop_ratio=0.5)
-val_ds = AudioDataset(NORMAL_SOUND_DIR, SIGNAL_LENGTH,
-                      SAMPLE_RATE, train=False, hop_ratio=0.5)
+    # 学習用と検証用で別インスタンス（学習側のみAugを有効化）
+    train_ds = AudioDataset(NORMAL_SOUND_DIR, SIGNAL_LENGTH,
+                            SAMPLE_RATE, train=True,  hop_ratio=0.5)
+    val_ds = AudioDataset(NORMAL_SOUND_DIR, SIGNAL_LENGTH,
+                          SAMPLE_RATE, train=False, hop_ratio=0.5)
 
-train_set = torch.utils.data.Subset(train_ds, train_idx.tolist())
-val_set = torch.utils.data.Subset(val_ds,   val_idx.tolist())
+    train_set = torch.utils.data.Subset(train_ds, train_idx.tolist())
+    val_set = torch.utils.data.Subset(val_ds,   val_idx.tolist())
 
-_pin = (device.type == 'cuda')
-train_loader = DataLoader(train_set, batch_size=BATCH_SIZE,
-                          shuffle=True,  num_workers=2, pin_memory=_pin)
-val_loader = DataLoader(val_set,   batch_size=BATCH_SIZE,
-                        shuffle=False, num_workers=2, pin_memory=_pin)
+    _pin = (device.type == 'cuda')
+    train_loader = DataLoader(train_set, batch_size=BATCH_SIZE,
+                              shuffle=True,  num_workers=2, pin_memory=_pin)
+    val_loader = DataLoader(val_set,   batch_size=BATCH_SIZE,
+                            shuffle=False, num_workers=2, pin_memory=_pin)
 
-model = M_Band_Wavelet_Autoencoder(
-    M=M, filter_length=FILTER_LENGTH, signal_length=SIGNAL_LENGTH).to(device)
-criterion = nn.MSELoss()
-optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
-scheduler = ReduceLROnPlateau(
-    optimizer, mode='min', factor=0.5, patience=3, verbose=True)
+    model = M_Band_Wavelet_Autoencoder(
+        M=M, filter_length=FILTER_LENGTH, signal_length=SIGNAL_LENGTH).to(device)
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    scheduler = ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=3)
 
-best_val = float('inf')
-patience_counter = 0
+    best_val = float('inf')
+    patience_counter = 0
 
-for epoch in range(EPOCHS):
-    model.train()
-    for x in train_loader:
-        x = x.to(device)
-        optimizer.zero_grad(set_to_none=True)
-        y = model(x)
-        loss_mse = criterion(y, x)
-        loss_spec = stft_l1_loss(y, x)
-        loss = loss_mse + lambda_spec * loss_spec
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
+    # print("学習開始")
 
-    model.eval()
-    val_loss = 0.0
-    with torch.no_grad():
-        for x in val_loader:
+    for epoch in range(EPOCHS):
+        model.train()
+        for i, x in enumerate(train_loader):
+            print(f"  [Epoch {epoch+1}] バッチ {i+1}/{len(train_loader)} の処理開始")
             x = x.to(device)
+            optimizer.zero_grad(set_to_none=True)
             y = model(x)
-            val_mse = criterion(y, x)
-            val_spec = stft_l1_loss(y, x)
-            val_loss += (val_mse + lambda_spec * val_spec).item()
+            loss_mse = criterion(y, x)
+            loss_spec = stft_l1_loss(y, x)
+            loss = loss_mse + lambda_spec * loss_spec
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
 
-    val_loss /= len(val_loader)
-    scheduler.step(val_loss)
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for x in val_loader:
+                x = x.to(device)
+                y = model(x)
+                val_mse = criterion(y, x)
+                val_spec = stft_l1_loss(y, x)
+                val_loss += (val_mse + lambda_spec * val_spec).item()
 
-    if val_loss + MIN_DELTA < best_val:
-        best_val = val_loss
-        torch.save(model.state_dict(), MODEL_SAVE_PATH)
-        patience_counter = 0
-    else:
-        patience_counter += 1
+        val_loss /= len(val_loader)
+        scheduler.step(val_loss)
 
-    if patience_counter >= PATIENCE:
-        break
+        if val_loss + MIN_DELTA < best_val:
+            best_val = val_loss
+            torch.save(model.state_dict(), MODEL_SAVE_PATH)
+            patience_counter = 0
+        else:
+            patience_counter += 1
 
-print("学習が完了しました。")
-print(f"\n最も性能の良かったモデル（誤差: {best_val:.8f}）が '{MODEL_SAVE_PATH}' に保存されています。")
+        if patience_counter >= PATIENCE:
+            break
+
+    print("学習が完了しました。")
+    print(
+        f"\n最も性能の良かったモデル（誤差: {best_val:.8f}）が '{MODEL_SAVE_PATH}' に保存されています。")
