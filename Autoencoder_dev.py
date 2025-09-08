@@ -82,6 +82,16 @@ class M_Band_Wavelet_Autoencoder(nn.Module):
         return reconstructed_x[:, :original_len]
 
 
+def stft_l1_loss(x, y, n_fft=512, hop=128, win=512):
+    X = torch.stft(x, n_fft=n_fft, hop_length=hop, win_length=win,
+                   return_complex=True, center=True)
+    Y = torch.stft(y, n_fft=n_fft, hop_length=hop, win_length=win,
+                   return_complex=True, center=True)
+    return (X.abs() - Y.abs()).abs().mean()
+
+
+lambda_spec = 0.5
+
 # ハイパーパラメータ設定・学習用フォルダの指定
 NORMAL_SOUND_DIR = os.path.expanduser(
     '~/DATABASE/AirCompressorDataset/Healthy')
@@ -96,6 +106,7 @@ PATIENCE = 10  # 10エポック連続で改善が見られなければ終了
 MIN_DELTA = 1e-6  # 改善とみなす最小の変化量
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+'''
 try:
     dataset = AudioDataset(folder_path=NORMAL_SOUND_DIR,
                            signal_length=SIGNAL_LENGTH, sample_rate=SAMPLE_RATE)
@@ -103,6 +114,7 @@ try:
 except Exception as e:
     print(f"データ読み込みエラー: {e}")
     exit()
+'''
 
 full = AudioDataset(NORMAL_SOUND_DIR, SIGNAL_LENGTH, SAMPLE_RATE)
 n_val = max(1, int(0.2 * len(full)))
@@ -118,7 +130,7 @@ val_loader = DataLoader(val_set,   batch_size=BATCH_SIZE,
 model = M_Band_Wavelet_Autoencoder(
     M=M, filter_length=FILTER_LENGTH, signal_length=SIGNAL_LENGTH).to(device)
 criterion = nn.MSELoss()
-optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=3e-4)
+optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
 scheduler = ReduceLROnPlateau(
     optimizer, mode='min', factor=0.5, patience=3, verbose=True)
 
@@ -131,7 +143,9 @@ for epoch in range(EPOCHS):
         x = x.to(device)
         optimizer.zero_grad(set_to_none=True)
         y = model(x)
-        loss = criterion(y, x)
+        loss_mse = criterion(y, x)
+        loss_spec = stft_l1_loss(y, x)
+        loss = loss_mse + lambda_spec * loss_spec
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
@@ -142,9 +156,11 @@ for epoch in range(EPOCHS):
         for x in val_loader:
             x = x.to(device)
             y = model(x)
-            val_loss += criterion(y, x).item()
-    val_loss /= len(val_loader)
+            val_mse = criterion(y, x)
+            val_spec = stft_l1_loss(y, x)
+            val_loss += (val_mse + lambda_spec * val_spec).item()
 
+    val_loss /= len(val_loader)
     scheduler.step(val_loss)
 
     if val_loss + MIN_DELTA < best_val:
