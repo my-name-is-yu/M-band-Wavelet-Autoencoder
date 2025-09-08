@@ -37,6 +37,7 @@ class AudioDataset(Dataset):
             hop = max(1, int(self.signal_length * self.hop_ratio))
             for start in range(0, len(audio) - self.signal_length + 1, hop):
                 segment = audio[start:start + self.signal_length]
+                self.segments.append(segment)
 
         if not self.segments:
             raise ValueError("どの音声ファイルも指定された信号長より短いため、学習データを作成できませんでした。")
