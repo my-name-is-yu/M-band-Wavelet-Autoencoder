@@ -8,6 +8,19 @@ import matplotlib.pyplot as plt
 import math
 import os
 import librosa
+from config import (
+    MODEL_SAVE_PATH,
+    NORMAL_SOUND_DIR,
+    SAMPLE_RATE,
+    SIGNAL_LENGTH,
+    M,
+    FILTER_LENGTH,
+    EPOCHS,
+    BATCH_SIZE,
+    PATIENCE,
+    MIN_DELTA,
+    LAMBDA_SPEC,
+)
 
 
 class AudioDataset(Dataset):
@@ -47,12 +60,6 @@ class AudioDataset(Dataset):
         return len(self.segments)
 
     def __getitem__(self, idx):
-        return torch.tensor(self.segments[idx], dtype=torch.float32)
-
-    def __len__(self):
-        return len(self.segments)
-
-    def __getitem__(self, idx):
         seg = self.segments[idx].copy()
         if self.train:
             g = np.random.uniform(0.8, 1.2)
@@ -60,8 +67,8 @@ class AudioDataset(Dataset):
             shift = np.random.randint(-64, 65)
             seg = np.roll(seg, shift)
             if np.random.rand() < 0.3:
-                s = np.random.randint(0, len(seg)-128)
-                seg[s:s+128] = 0.0
+                s = np.random.randint(0, len(seg) - 128)
+                seg[s:s + 128] = 0.0
         return torch.tensor(seg, dtype=torch.float32)
 
 
@@ -111,20 +118,6 @@ if __name__ == '__main__':
                        return_complex=True, center=True)
         return (X.abs() - Y.abs()).abs().mean()
 
-    lambda_spec = 0.5
-
-    # ハイパーパラメータ設定・学習用フォルダの指定
-    NORMAL_SOUND_DIR = os.path.expanduser(
-        '~/DATABASE/AirCompressorDataset/Healthy')
-    MODEL_SAVE_PATH = 'm_band_wavelet_model.pth'
-    SAMPLE_RATE = 16000
-    SIGNAL_LENGTH = 4096
-    M = 8
-    FILTER_LENGTH = 64
-    EPOCHS = 10
-    BATCH_SIZE = 32
-    PATIENCE = 10  # 10エポック連続で改善が見られなければ終了
-    MIN_DELTA = 1e-6  # 改善とみなす最小の変化量
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     full_tmp = AudioDataset(NORMAL_SOUND_DIR, SIGNAL_LENGTH,
@@ -174,7 +167,7 @@ if __name__ == '__main__':
             y = model(x)
             loss_mse = criterion(y, x)
             loss_spec = stft_l1_loss(y, x)
-            loss = loss_mse + lambda_spec * loss_spec
+            loss = loss_mse + LAMBDA_SPEC * loss_spec
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -187,7 +180,7 @@ if __name__ == '__main__':
                 y = model(x)
                 val_mse = criterion(y, x)
                 val_spec = stft_l1_loss(y, x)
-                val_loss += (val_mse + lambda_spec * val_spec).item()
+                val_loss += (val_mse + LAMBDA_SPEC * val_spec).item()
 
         val_loss /= len(val_loader)
         scheduler.step(val_loss)
