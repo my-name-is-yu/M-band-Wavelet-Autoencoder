@@ -13,11 +13,11 @@ M = 8
 FILTER_LENGTH = 64
 
 # 学習パラメータ
-EPOCHS = 10
+EPOCHS = 50
 BATCH_SIZE = 32
-PATIENCE = 3  # Early Stopping用
-MIN_DELTA = 1e-5  # 改善とみなす最小値
-LAMBDA_SPEC = 0.5  # 0で時間領域の誤差のみで学習、1でスペクトル誤差のみで学習
+PATIENCE = 5  # Early Stopping用
+MIN_DELTA = 1e-4  # 改善とみなす最小値
+LAMBDA_SPEC = 0.6  # 0で時間領域の誤差のみで学習、1でスペクトル誤差のみで学習
 
 # 評価パラメータ
 EVAL_HOP_RATIO = 0.5  # フレーム分割時の重なり 0.5で50%オーバーラップ

@@ -37,8 +37,8 @@ class AudioDataset(Dataset):
         self.train = train
         self.hop_ratio = hop_ratio
 
-        self.file_paths = [os.path.join(folder_path, f) for f in os.listdir(
-            folder_path) if f.endswith('.wav')]
+        self.file_paths = [os.path.join(folder_path, f) for f in sorted(os.listdir(
+            folder_path)) if f.endswith('.wav')]
         if not self.file_paths:
             raise ValueError(f"指定されたフォルダ '{folder_path}' にWAVファイルが見つかりません。")
 
@@ -106,17 +106,30 @@ class M_Band_Wavelet_Autoencoder(nn.Module):
 
 
 if __name__ == '__main__':
-    def stft_l1_loss(x, y, n_fft=512, hop=128, win=512):
-        # OK: winを最初の「位置引数」として渡す
-        window = torch.hann_window(win, device=x.device)
+    def multi_res_stft_loss(x, y,
+                            ffts=(256, 512, 1024),
+                            hops=(64, 128, 256),
+                            wins=(256, 512, 1024),
+                            log_mag=True):
+        loss = 0.0
+        for n_fft, hop, win in zip(ffts, hops, wins):
+            window = torch.hann_window(win, device=x.device)
+            X = torch.stft(x, n_fft=n_fft, hop_length=hop, win_length=win,
+                           window=window, return_complex=True, center=True)
+            Y = torch.stft(y, n_fft=n_fft, hop_length=hop, win_length=win,
+                           window=window, return_complex=True, center=True)
+            magX = X.abs()
+            magY = Y.abs()
+            if log_mag:
+                eps = 1e-7
+                magX = torch.log(magX + eps)
+                magY = torch.log(magY + eps)
+            loss = loss + (magX - magY).abs().mean()
+        return loss / len(ffts)
 
-        X = torch.stft(x, n_fft=n_fft, hop_length=hop, win_length=win,
-                       window=window,
-                       return_complex=True, center=True)
-        Y = torch.stft(y, n_fft=n_fft, hop_length=hop, win_length=win,
-                       window=window,
-                       return_complex=True, center=True)
-        return (X.abs() - Y.abs()).abs().mean()
+    # 互換ラッパ（単一STFT・線形振幅）
+    def stft_l1_loss(x, y, n_fft=512, hop=128, win=512):
+        return multi_res_stft_loss(x, y, ffts=(n_fft,), hops=(hop,), wins=(win,), log_mag=False)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -148,7 +161,7 @@ if __name__ == '__main__':
 
     model = M_Band_Wavelet_Autoencoder(
         M=M, filter_length=FILTER_LENGTH, signal_length=SIGNAL_LENGTH).to(device)
-    criterion = nn.MSELoss()
+    criterion_time = nn.L1Loss()
     optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
     scheduler = ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=3)
@@ -165,9 +178,9 @@ if __name__ == '__main__':
             x = x.to(device)
             optimizer.zero_grad(set_to_none=True)
             y = model(x)
-            loss_mse = criterion(y, x)
-            loss_spec = stft_l1_loss(y, x)
-            loss = loss_mse + LAMBDA_SPEC * loss_spec
+            loss_time = criterion_time(y, x)
+            loss_spec = multi_res_stft_loss(y, x)
+            loss = loss_time + LAMBDA_SPEC * loss_spec
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -178,9 +191,9 @@ if __name__ == '__main__':
             for x in val_loader:
                 x = x.to(device)
                 y = model(x)
-                val_mse = criterion(y, x)
-                val_spec = stft_l1_loss(y, x)
-                val_loss += (val_mse + LAMBDA_SPEC * val_spec).item()
+                val_time = criterion_time(y, x)
+                val_spec = multi_res_stft_loss(y, x)
+                val_loss += (val_time + LAMBDA_SPEC * val_spec).item()
 
         val_loss /= len(val_loader)
         scheduler.step(val_loss)
